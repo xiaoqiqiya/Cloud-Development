@@ -79,9 +79,9 @@ RUN GOBIN=/usr/local/bin go install golang.org/x/vuln/cmd/govulncheck@latest
 ENV RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/opt/cargo
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
+# 只保留 stable 工具链：nightly（含 rustc-dev/llvm-tools，~1.4G）无引用方，已移除。
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0 --profile minimal \
     && rustup component add clippy rustfmt rust-src \
-    && rustup toolchain install nightly-2025-09-18 --profile minimal --component llvm-tools-preview --component rustc-dev --component rust-src \
     && rm -rf "${RUSTUP_HOME}"/toolchains/*/share/doc \
               "${RUSTUP_HOME}"/toolchains/*/share/man
 
@@ -363,8 +363,7 @@ RUN sed -i '/^path-exclude \/usr\/share\/locale\/\*$/d' /etc/dpkg/dpkg.cfg.d/doc
 # 运行时依赖 + Playwright Chromium 系统库 + Wine
 # 启用 non-free 组件，因为 unrar 仅在 non-free 仓库中提供
 # Adoptium (Eclipse Temurin) 仓库 — Debian bookworm 默认仓库不提供 JDK 21
-RUN dpkg --add-architecture i386 \
-    && sed -i 's/Components: main/Components: main non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources \
+RUN sed -i 's/Components: main/Components: main non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
     && mkdir -p /etc/apt/keyrings \
@@ -475,11 +474,10 @@ RUN dpkg --add-architecture i386 \
         libheif-examples \
         # 文档格式转换工具（Markdown / HTML / docx 等互转）
         pandoc \
-        # Wine + NSIS
+        # Wine（仅 64 位）+ NSIS。不启用 i386 多架构（wine32 连带 ~700M i386 依赖），
+        # 不装 mono-complete：NSIS 不依赖 mono，如需在 wine 下运行 .NET 再单独评估。
         wine \
         wine64 \
-        wine32 \
-        mono-complete \
         nsis \
     && sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen \
     && locale-gen \

@@ -56,23 +56,30 @@ RUN CODE_SERVER_ARCH="$(dpkg --print-architecture)" \
     && rm -rf /var/lib/apt/lists/*
 
 # === 2. serena-agent（uv tool install，中低频）===
+# UV_CACHE_DIR 指到 /tmp 且与安装同层删除：默认缓存落在 /home/app/.cache/uv
+# 会被烧进镜像层（曾累积 ~110M）。
 RUN if ! command -v uv >/dev/null 2>&1; then \
       curl -fsSL https://astral.sh/uv/install.sh | env CARGO_HOME=/tmp/uv-cargo UV_INSTALL_DIR=/usr/local/bin sh \
       && rm -rf /tmp/uv-cargo; \
     fi \
-    && UV_TOOL_BIN_DIR=/usr/local/bin uv tool install -p 3.13 "serena-agent@${SERENA_VERSION}" --prerelease=allow \
+    && UV_CACHE_DIR=/tmp/uv-cache UV_TOOL_BIN_DIR=/usr/local/bin uv tool install -p 3.13 "serena-agent@${SERENA_VERSION}" --prerelease=allow \
+    && rm -rf /tmp/uv-cache \
     && serena init
 
 # === 3. Codex（npm，中频）===
 # 拆分独立层：单个 npm 包升级不再连带重建其他 npm 包。
-RUN npm install -g @openai/codex@${CODEX_VERSION}
+# npm cache clean 必须与安装同一 RUN：动态层继承 Base 层 ENV HOME=/home/app，
+# npm 缓存落在 /home/app/.npm，跨层删除不缩小镜像（曾累积 862M）。
+RUN npm install -g @openai/codex@${CODEX_VERSION} \
+    && npm cache clean --force
 
 # === 4. Claude Code（npm，中高频）===
 # 安装官方 npm 包 @anthropic-ai/claude-code。
 # 版本由 CLAUDE_CODE_VERSION 驱动（check-update.yml 检测 npm registry）。
 # @cometix/ccline 是配套工具，随 CC 一起重建，不单独接入自动更新。
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
-    && npm install -g @cometix/ccline
+    && npm install -g @cometix/ccline \
+    && npm cache clean --force
 
 # === 4.5 Claude Code 补丁（agent/ccpatch/，中低频）===
 # 装完 Claude Code 后自动执行 agent/ccpatch/ 下全部 *.sh 补丁脚本。
@@ -87,7 +94,8 @@ RUN chmod +x /usr/local/bin/run-ccpatch.sh \
 
 # === 5. codex-security（npm，高频）===
 # OpenAI Codex Security CLI，仅 npm 分发：https://www.npmjs.com/package/@openai/codex-security
-RUN npm install -g @openai/codex-security@${CODEX_SECURITY_VERSION}
+RUN npm install -g @openai/codex-security@${CODEX_SECURITY_VERSION} \
+    && npm cache clean --force
 
 # === 6. Antigravity CLI（agy，官方清单直装，高频）===
 # 安装流程等价官方 bootstrapper（curl -fsSL https://antigravity.google/cli/install.sh | bash）：
@@ -121,6 +129,7 @@ RUN set -eux \
 # rm -rf 必须与 install 在同一 RUN 内：Docker 层叠加，
 # 在新层里删除上一层添加的文件不会回收空间，必须安装+删除在同一层完成。
 RUN npm install -g opencode-ai@${OPENCODE_VERSION} \
+    && npm cache clean --force \
     && rm -rf /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64-baseline \
               /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64-baseline-musl \
               /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64-musl
@@ -145,6 +154,7 @@ RUN apt-get update \
     && env HOME=/home/app PNPM_HOME=/home/app/.local/share/pnpm CI=true \
        PATH="/home/app/.local/share/pnpm/bin:/home/app/.local/share/pnpm:${PATH}" \
        pnpm add -g "@openchamber/web@${OPENCHAMBER_VERSION}" \
+    && rm -rf /home/app/.cache/pnpm \
     && ln -sf /home/app/.local/share/pnpm/bin/openchamber /usr/local/bin/openchamber \
     && chown -R app:app /home/app/.local/share/pnpm \
     && openchamber --version
