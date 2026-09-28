@@ -22,3 +22,7 @@ app-config/
 
 # Build outputs
 target/
+
+# Local research/audit reports — keep local, never push
+*-SURVEY-*.md
+*-AUDIT-*.md
