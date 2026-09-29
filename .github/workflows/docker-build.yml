@@ -26,7 +26,7 @@ on:
         default: ''
         type: string
       opencode_version:
-        description: 'OpenCode version (e.g. 1.3.15 or v1.3.15). Leave empty to reuse saved release version.'
+        description: 'OpenCode v2 version from npm @opencode/cli (e.g. 2.0.19 or v2.0.19). Leave empty to reuse saved release version.'
         required: false
         default: ''
         type: string
@@ -474,10 +474,10 @@ jobs:
           tag_name: ${{ needs.resolve.outputs.opencode_tag }}
           name: OpenCode ${{ needs.resolve.outputs.opencode_tag }}
           body: |
-            Docker image for [OpenCode ${{ needs.resolve.outputs.opencode_tag }}](https://github.com/anomalyco/opencode/releases/tag/${{ needs.resolve.outputs.opencode_tag }})
+            Docker image for [OpenCode ${{ needs.resolve.outputs.opencode_tag }}](https://www.npmjs.com/package/@opencode/cli/v/${{ needs.resolve.outputs.opencode_version }})
 
             <!-- 版本标记（供自动更新检查读取，请勿删除） -->
-            <!-- opencode-version=${{ needs.resolve.outputs.opencode_tag }} -->
+            <!-- opencode-version=${{ needs.resolve.outputs.opencode_version }} -->
             <!-- code-server-version=${{ needs.resolve.outputs.code_server_version }} -->
             <!-- codex-version=${{ needs.resolve.outputs.codex_version }} -->
             <!-- serena-version=${{ needs.resolve.outputs.serena_version }} -->

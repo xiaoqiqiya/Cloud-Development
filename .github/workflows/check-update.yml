@@ -23,13 +23,16 @@ jobs:
       # ==========================================
       # 获取上游最新版本
       # ==========================================
-      - name: Get OpenCode latest release
+      # OpenCode v2 起不再发布 GitHub Release（仓库只有裸 git tag），npm 是唯一权威版本源；
+      # 包名也由 v1 的 opencode-ai 更名为 @opencode/cli（仅含 2.x），版本号为纯数字。
+      - name: Get OpenCode latest version
         id: opencode
         run: |
           set -euo pipefail
-          LATEST=$(gh api repos/anomalyco/opencode/releases/latest --jq '.tag_name')
+          LATEST=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            https://registry.npmjs.org/@opencode%2Fcli/latest | jq -r '.version')
           if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
-            echo "Failed to resolve OpenCode latest release tag" >&2
+            echo "Failed to resolve OpenCode latest version from npm" >&2
             exit 1
           fi
           echo "version=$LATEST" >> $GITHUB_OUTPUT
@@ -201,11 +204,12 @@ jobs:
             fi
           }
 
-          # OpenCode: GitHub tag 直接是版本号（含 v 前缀）
+          # OpenCode: 上游为 npm 纯数字版本号；历史 release 锁定值曾带 v 前缀，比对前统一剥掉
+          LOCAL_OPENCODE="${{ steps.local.outputs.opencode }}"
           check_update "OpenCode" \
-            "${{ steps.local.outputs.opencode }}" \
+            "${LOCAL_OPENCODE#v}" \
             "${{ steps.opencode.outputs.version }}" \
-            "https://github.com/anomalyco/opencode/releases/tag/${{ steps.opencode.outputs.version }}"
+            "https://www.npmjs.com/package/@opencode/cli/v/${{ steps.opencode.outputs.version }}"
 
           # code-server: 本地已剥 v 前缀，URL 里补回
           check_update "code-server" \

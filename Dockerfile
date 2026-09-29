@@ -125,14 +125,16 @@ RUN set -eux \
     && /usr/local/bin/agy --version \
     && rm -rf /tmp/agy-manifest.json /tmp/agy.tar.gz /tmp/antigravity
 
-# === 7. opencode（最高频，必须排最后）===
+# === 7. opencode v2（最高频，必须排最后）===
+# v2 起官方 npm 包由 opencode-ai 更名为 @opencode/cli（仅含 2.x，v1 停在 opencode-ai@1.18.x）。
+# postinstall 会把命中平台的二进制硬链进包内 bin/，因此装完裁掉其余平台包不影响运行。
 # rm -rf 必须与 install 在同一 RUN 内：Docker 层叠加，
 # 在新层里删除上一层添加的文件不会回收空间，必须安装+删除在同一层完成。
-RUN npm install -g opencode-ai@${OPENCODE_VERSION} \
+RUN npm install -g @opencode/cli@${OPENCODE_VERSION} \
     && npm cache clean --force \
-    && rm -rf /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64-baseline \
-              /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64-baseline-musl \
-              /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64-musl
+    && rm -rf /usr/local/lib/node_modules/@opencode/cli/node_modules/@opencode/cli-linux-x64-baseline \
+              /usr/local/lib/node_modules/@opencode/cli/node_modules/@opencode/cli-linux-x64-baseline-musl \
+              /usr/local/lib/node_modules/@opencode/cli/node_modules/@opencode/cli-linux-x64-musl
 
 # === 8. openchamber（pnpm，最高频）===
 # OpenChamber Web UI（@openchamber/web），运行时托管 opencode serve，对外提供 4096 端口。
