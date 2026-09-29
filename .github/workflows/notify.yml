@@ -23,12 +23,27 @@ jobs:
       - name: Resolve notification context
         id: ctx
         env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           WF_NAME: ${{ github.event.workflow_run.name }}
           REPO: ${{ github.repository }}
           # updated_at 为上游工作流完成时间（UTC ISO），转成北京时间可读格式
           UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
         run: |
+          set -euo pipefail
+
+          # 动态层存在“无更新不打包”运行：打包闸门放空后构建与 Release job 全部跳过，
+          # 工作流整体仍记 success，但这不是一次打包，不发卡避免误报。
+          if [ "$WF_NAME" = "Build and Push Docker Image" ]; then
+            RELEASE_CONCLUSION=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
+              --jq '[.jobs[] | select(.name == "Create or update GitHub Release")][0].conclusion // empty')
+            if [ -z "$RELEASE_CONCLUSION" ] || [ "$RELEASE_CONCLUSION" = "skipped" ]; then
+              echo "Dynamic-layer run packaged nothing (release job absent or skipped); suppressing notification."
+              exit 0
+            fi
+          fi
+
           # 1. 根据构建结论选择卡片模板
           if [ "$CONCLUSION" = "success" ]; then
             echo "template_id=AAqv2e8wrOFTm" >> $GITHUB_OUTPUT
