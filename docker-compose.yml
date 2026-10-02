@@ -10,8 +10,6 @@ services:
     ports:
       # Codex登录端口
       - "0.0.0.0:1455:1455"
-      # OpenCode端口
-      - "127.0.0.1:4096:4096"
       # Code-Serve端口
       - "127.0.0.1:4097:8080"
       # SSH 端口
@@ -19,10 +17,6 @@ services:
       # 远程桌面 (RDP) 端口
       - "127.0.0.1:3390:3390"
     environment:
-      # OpenChamber（主服务入口，托管 opencode serve，端口 4096）
-      - OPENCHAMBER_UI_PASSWORD=${OPENCHAMBER_UI_PASSWORD:-} # OpenChamber 浏览器 UI 登录密码，留空则无密码保护（对外暴露时务必设置）
-      - OPENCHAMBER_HOST=${OPENCHAMBER_HOST:-0.0.0.0} # OpenChamber 监听地址，默认 0.0.0.0 以支持容器端口映射
-      - OPENCODE_ENABLE_EXA=${OPENCODE_ENABLE_EXA:-true} # 是否启用 OpenCode 的 Exa 搜索能力
       # Code-Server
       - CODE_SERVER_PASSWORD=${CODE_SERVER_PASSWORD:-} # code-server 明文登录密码，entrypoint 会注入给 code-server
       - CODE_SERVER_HASHED_PASSWORD=${CODE_SERVER_HASHED_PASSWORD:-} # code-server 哈希密码（优先级高于明文），留空则不启用
@@ -80,14 +74,7 @@ services:
       - ./app-config/authorized_keys:/home/app/.ssh/authorized_keys:ro # SSH 公钥文件，挂载后启用 SSH Server，端口 2223
       
       # CLI
-      # === OpenCode 配置 ===
-      - ./.config/opencode/agents:/home/app/.config/opencode/agents:rshared
-      - ./.config/opencode/plugins:/home/app/.config/opencode/plugins:rshared
-      - ./.config/opencode/skills:/home/app/.config/opencode/skills:rshared
-      - ./.config/opencode/AGENTS.md:/home/app/.config/opencode/AGENTS.md:rshared
-      - ./.config/opencode/opencode.json:/home/app/.config/opencode/opencode.json:rshared
-      - ./.local/share/opencode:/home/app/.local/share/opencode:rshared
-      # === OpenCode 附属依赖 - Serena ===
+      # === Serena MCP ===
       - ./.serena:/home/app/.serena:rshared
       # === Anthropic Claude Code ===
       - ./.claude:/home/app/.claude:rshared

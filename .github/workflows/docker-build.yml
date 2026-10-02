@@ -25,11 +25,6 @@ on:
         required: false
         default: ''
         type: string
-      opencode_version:
-        description: 'OpenCode v2 version from npm @opencode/cli (e.g. 2.0.19 or v2.0.19). Leave empty to reuse saved release version.'
-        required: false
-        default: ''
-        type: string
       code_server_version:
         description: 'code-server version (e.g. 4.115.0 or v4.115.0). Leave empty to reuse saved release version.'
         required: false
@@ -52,11 +47,6 @@ on:
         type: string
       codex_security_version:
         description: 'codex-security version (e.g. 0.1.12). Leave empty to reuse saved release version.'
-        required: false
-        default: ''
-        type: string
-      openchamber_version:
-        description: 'OpenChamber version (e.g. 1.21.0 or v1.21.0). Leave empty to reuse saved release version.'
         required: false
         default: ''
         type: string
@@ -118,14 +108,12 @@ jobs:
     permissions:
       contents: read
     outputs:
-      opencode_version: ${{ steps.version.outputs.opencode_version }}
       code_server_version: ${{ steps.version.outputs.code_server_version }}
       codex_version: ${{ steps.version.outputs.codex_version }}
       serena_version: ${{ steps.version.outputs.serena_version }}
       claude_code_version: ${{ steps.version.outputs.claude_code_version }}
       codex_security_version: ${{ steps.version.outputs.codex_security_version }}
       antigravity_version: ${{ steps.version.outputs.antigravity_version }}
-      openchamber_version: ${{ steps.version.outputs.openchamber_version }}
       release_tag: ${{ steps.version.outputs.release_tag }}
       package: ${{ steps.version.outputs.package }}
     steps:
@@ -134,13 +122,11 @@ jobs:
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_OPENCODE_VERSION: ${{ inputs.opencode_version }}
           INPUT_CODE_SERVER_VERSION: ${{ inputs.code_server_version }}
           INPUT_CODEX_VERSION: ${{ inputs.codex_version }}
           INPUT_SERENA_VERSION: ${{ inputs.serena_version }}
           INPUT_CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
           INPUT_CODEX_SECURITY_VERSION: ${{ inputs.codex_security_version }}
-          INPUT_OPENCHAMBER_VERSION: ${{ inputs.openchamber_version }}
           INPUT_BASE_IMAGE: ${{ inputs.base_image }}
           INPUT_DESKTOP_IMAGE: ${{ inputs.desktop_image }}
           FORCE_PACKAGE: ${{ inputs.force_package }}
@@ -150,13 +136,11 @@ jobs:
           # workflow_dispatch 的缺失输入可能被表达式渲染为字符串 "null"。
           # 这里统一归一化为空串，让后续“入参 → release 锁定值 → 上游实时值”正常回退。
           for input_var in \
-            INPUT_OPENCODE_VERSION \
             INPUT_CODE_SERVER_VERSION \
             INPUT_CODEX_VERSION \
             INPUT_SERENA_VERSION \
             INPUT_CLAUDE_CODE_VERSION \
             INPUT_CODEX_SECURITY_VERSION \
-            INPUT_OPENCHAMBER_VERSION \
             INPUT_BASE_IMAGE \
             INPUT_DESKTOP_IMAGE; do
             if [ "${!input_var:-}" = "null" ]; then
@@ -177,13 +161,11 @@ jobs:
             if [ "${FORCE_PACKAGE:-false}" != "true" ] \
               && [ -z "${INPUT_BASE_IMAGE:-}" ] \
               && [ -z "${INPUT_DESKTOP_IMAGE:-}" ] \
-              && [ -z "${INPUT_OPENCODE_VERSION:-}" ] \
               && [ -z "${INPUT_CODE_SERVER_VERSION:-}" ] \
               && [ -z "${INPUT_CODEX_VERSION:-}" ] \
               && [ -z "${INPUT_SERENA_VERSION:-}" ] \
               && [ -z "${INPUT_CLAUDE_CODE_VERSION:-}" ] \
-              && [ -z "${INPUT_CODEX_SECURITY_VERSION:-}" ] \
-              && [ -z "${INPUT_OPENCHAMBER_VERSION:-}" ]; then
+              && [ -z "${INPUT_CODEX_SECURITY_VERSION:-}" ]; then
               echo "No component update, no cascade image, force_package unset; skip packaging."
               echo "package=false" >> "$GITHUB_OUTPUT"
               exit 0
@@ -200,7 +182,6 @@ jobs:
           # 剥离规则统一为：先剥组件专属前缀（rust-v / npm-v 等），再剥裸 v 前缀。
           # 输出统一命名：<组件名>_version（纯版本号）。
           COMPONENTS=(
-            "opencode|INPUT_OPENCODE_VERSION|opencode-version|"
             "code_server|INPUT_CODE_SERVER_VERSION|code-server-version|"
             "codex|INPUT_CODEX_VERSION|codex-version|rust-v"
             "serena|INPUT_SERENA_VERSION|serena-version|"
@@ -239,26 +220,6 @@ jobs:
             echo "$name: $ver"
             echo "${name}_version=$ver" >> "$GITHUB_OUTPUT"
           done
-
-          # --- OpenChamber 版本 ---
-          # 与 Antigravity 同模式：首个版本构建时 release body 里还没有 openchamber-version
-          # 锁定标记（标记由本 workflow 首次成功后才写入），push/级联触发又没有入参，
-          # 若只依赖"入参→锁定值"会陷入鸡生蛋死锁。因此未提供入参时实时查上游
-          # GitHub releases 最新版：既作为缓存 key 传给 Dockerfile，也写入 release 标记。
-          OPENCHAMBER_VERSION="${INPUT_OPENCHAMBER_VERSION:-}"
-          if [ "$OPENCHAMBER_VERSION" = "null" ]; then OPENCHAMBER_VERSION=""; fi
-          if [ -z "$OPENCHAMBER_VERSION" ]; then
-            OPENCHAMBER_VERSION=$(printf '%s' "${BODY:-}" | grep -oP 'openchamber-version=\K[^\s]+' || true)
-          fi
-          if [ -z "$OPENCHAMBER_VERSION" ]; then
-            OPENCHAMBER_VERSION=$(gh api repos/openchamber/openchamber/releases/latest --jq '.tag_name' | sed 's/^v//')
-          fi
-          if [ -z "$OPENCHAMBER_VERSION" ] || [ "$OPENCHAMBER_VERSION" = "null" ]; then
-            echo "OpenChamber version was not resolved from input, saved release, or upstream releases" >&2
-            exit 1
-          fi
-          echo "openchamber: $OPENCHAMBER_VERSION"
-          echo "openchamber_version=$OPENCHAMBER_VERSION" >> "$GITHUB_OUTPUT"
 
           # --- Antigravity CLI 版本 ---
           # 上游清单永远只暴露最新版（无历史版本可锁），因此不设 workflow_dispatch 入参、
@@ -357,14 +318,12 @@ jobs:
           context: .
           build-args: |
             BASE_IMAGE=${{ steps.parent_image.outputs.image }}
-            OPENCODE_VERSION=${{ needs.resolve.outputs.opencode_version }}
             CODE_SERVER_VERSION=${{ needs.resolve.outputs.code_server_version }}
             CODEX_VERSION=${{ needs.resolve.outputs.codex_version }}
             SERENA_VERSION=${{ needs.resolve.outputs.serena_version }}
             CLAUDE_CODE_VERSION=${{ needs.resolve.outputs.claude_code_version }}
             CODEX_SECURITY_VERSION=${{ needs.resolve.outputs.codex_security_version }}
             ANTIGRAVITY_VERSION=${{ needs.resolve.outputs.antigravity_version }}
-            OPENCHAMBER_VERSION=${{ needs.resolve.outputs.openchamber_version }}
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -469,14 +428,12 @@ jobs:
           context: .
           build-args: |
             BASE_IMAGE=${{ steps.parent_image.outputs.image }}
-            OPENCODE_VERSION=${{ needs.resolve.outputs.opencode_version }}
             CODE_SERVER_VERSION=${{ needs.resolve.outputs.code_server_version }}
             CODEX_VERSION=${{ needs.resolve.outputs.codex_version }}
             SERENA_VERSION=${{ needs.resolve.outputs.serena_version }}
             CLAUDE_CODE_VERSION=${{ needs.resolve.outputs.claude_code_version }}
             CODEX_SECURITY_VERSION=${{ needs.resolve.outputs.codex_security_version }}
             ANTIGRAVITY_VERSION=${{ needs.resolve.outputs.antigravity_version }}
-            OPENCHAMBER_VERSION=${{ needs.resolve.outputs.openchamber_version }}
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -513,17 +470,14 @@ jobs:
           name: ${{ needs.resolve.outputs.release_tag }}
           body: |
             发行 tag 为北京日期 Calver（vYYYY.MM.DD），与组件版本解耦；同日多次构建覆盖同 tag。
-            本次镜像内置 [OpenCode ${{ needs.resolve.outputs.opencode_version }}](https://www.npmjs.com/package/@opencode/cli/v/${{ needs.resolve.outputs.opencode_version }})。
 
             <!-- 版本标记（供自动更新检查读取，请勿删除） -->
-            <!-- opencode-version=${{ needs.resolve.outputs.opencode_version }} -->
             <!-- code-server-version=${{ needs.resolve.outputs.code_server_version }} -->
             <!-- codex-version=${{ needs.resolve.outputs.codex_version }} -->
             <!-- serena-version=${{ needs.resolve.outputs.serena_version }} -->
             <!-- claude-code-version=${{ needs.resolve.outputs.claude_code_version }} -->
             <!-- codex-security-version=${{ needs.resolve.outputs.codex_security_version }} -->
             <!-- antigravity-version=${{ needs.resolve.outputs.antigravity_version }} -->
-            <!-- openchamber-version=${{ needs.resolve.outputs.openchamber_version }} -->
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

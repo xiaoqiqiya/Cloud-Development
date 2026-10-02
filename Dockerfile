@@ -29,22 +29,18 @@
 #   4.5 CC 补丁       ← agent/ccpatch/*.sh，中低频（紧跟 CC 层，CC 升级时自动对最新 cli.js 重跑）
 #   5. codex-security ← npm，高频（0.x 早期阶段，迭代极快）
 #   6. Antigravity    ← 官方清单最新版二进制直装，高频（1.x 早期阶段）
-#   7. opencode       ← npm，最高频（用户感知最强的小版本迭代）
-#   8. openchamber    ← pnpm，最高频（与 opencode 同频发布，且运行时托管 opencode 进程）
 #
 # 拆分 npm 层后，单个 npm 包升级只重建自己一层，不影响其他 npm 包缓存。
 
 ARG BASE_IMAGE=ghcr.io/zhongruan0522/opencode-docker:base
 FROM ${BASE_IMAGE}
 
-ARG OPENCODE_VERSION=latest
 ARG CODE_SERVER_VERSION=4.115.0
 ARG CODEX_VERSION=latest
 ARG SERENA_VERSION=latest
 ARG CLAUDE_CODE_VERSION=latest
 ARG CODEX_SECURITY_VERSION=latest
 ARG ANTIGRAVITY_VERSION=latest
-ARG OPENCHAMBER_VERSION=latest
 
 # === 1. code-server（apt deb，中低频）===
 RUN CODE_SERVER_ARCH="$(dpkg --print-architecture)" \
@@ -124,42 +120,6 @@ RUN set -eux \
     && install -m 0755 /tmp/antigravity /usr/local/bin/agy \
     && /usr/local/bin/agy --version \
     && rm -rf /tmp/agy-manifest.json /tmp/agy.tar.gz /tmp/antigravity
-
-# === 7. opencode v2（最高频，必须排最后）===
-# v2 起官方 npm 包由 opencode-ai 更名为 @opencode/cli（仅含 2.x，v1 停在 opencode-ai@1.18.x）。
-# postinstall 会把命中平台的二进制硬链进包内 bin/，因此装完裁掉其余平台包不影响运行。
-# rm -rf 必须与 install 在同一 RUN 内：Docker 层叠加，
-# 在新层里删除上一层添加的文件不会回收空间，必须安装+删除在同一层完成。
-RUN npm install -g @opencode/cli@${OPENCODE_VERSION} \
-    && npm cache clean --force \
-    && rm -rf /usr/local/lib/node_modules/@opencode/cli/node_modules/@opencode/cli-linux-x64-baseline \
-              /usr/local/lib/node_modules/@opencode/cli/node_modules/@opencode/cli-linux-x64-baseline-musl \
-              /usr/local/lib/node_modules/@opencode/cli/node_modules/@opencode/cli-linux-x64-musl
-
-# === 8. openchamber（pnpm，最高频）===
-# OpenChamber Web UI（@openchamber/web），运行时托管 opencode serve，对外提供 4096 端口。
-# - 必须补装 python3-dev：node-pty 的 prebuild 二进制仅在 Node ABI 匹配时可用，
-#   ABI 失配回退 node-gyp 本地编译时需要 Python.h 才能成功。
-# - DEBIAN_FRONTEND=noninteractive 保证 apt 非交互安装不卡构建；CI=true 让 pnpm
-#   跳过全局目录变更时的交互确认（构建容器内无 TTY）。
-# - HOME=/home/app：pnpm 全局 bin 落在 /home/app/.local/share/pnpm/bin，
-#   与运行时 PATH（entrypoint 写入的 profile.d）保持一致；
-#   若以默认 root 家目录安装，服务降权后找不到 openchamber 可执行文件。
-# - PATH 必须显式包含 PNPM_HOME/bin：Base 层 ENV 的 PATH 只带 PNPM_HOME 本身，
-#   而 pnpm 要求"配置的全局 bin 目录必须在 PATH 中"，缺失会直接拒绝全局安装
-#   （[ERROR] ... is not in PATH → Run "pnpm setup"）。这是 CI 首次构建失败根因。
-# - symlink 到 /usr/local/bin：supervisord 不加载 profile.d 的 PATH，
-#   用绝对路径且 node 一定能找到的方式拉起服务。
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && env HOME=/home/app PNPM_HOME=/home/app/.local/share/pnpm CI=true \
-       PATH="/home/app/.local/share/pnpm/bin:/home/app/.local/share/pnpm:${PATH}" \
-       pnpm add -g "@openchamber/web@${OPENCHAMBER_VERSION}" \
-    && rm -rf /home/app/.cache/pnpm \
-    && ln -sf /home/app/.local/share/pnpm/bin/openchamber /usr/local/bin/openchamber \
-    && chown -R app:app /home/app/.local/share/pnpm \
-    && openchamber --version
 
 # 动态层覆盖启动配置。
 COPY base/entrypoint.sh /usr/local/bin/entrypoint.sh

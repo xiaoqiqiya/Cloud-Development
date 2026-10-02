@@ -23,35 +23,6 @@ jobs:
       # ==========================================
       # 获取上游最新版本
       # ==========================================
-      # OpenCode v2 起不再发布 GitHub Release（仓库只有裸 git tag），npm 是唯一权威版本源；
-      # 包名也由 v1 的 opencode-ai 更名为 @opencode/cli（仅含 2.x），版本号为纯数字。
-      - name: Get OpenCode latest version
-        id: opencode
-        run: |
-          set -euo pipefail
-          LATEST=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
-            https://registry.npmjs.org/@opencode%2Fcli/latest | jq -r '.version')
-          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
-            echo "Failed to resolve OpenCode latest version from npm" >&2
-            exit 1
-          fi
-          echo "version=$LATEST" >> $GITHUB_OUTPUT
-          echo "OpenCode latest: $LATEST"
-
-      # OpenChamber 的 GitHub tag 带 v 前缀（如 v1.21.0），剥离后存纯版本号。
-      # 与 Dockerfile pnpm 安装的 @openchamber/web 同源发布，取最新 release 即可。
-      - name: Get OpenChamber latest release
-        id: openchamber
-        run: |
-          set -euo pipefail
-          LATEST=$(gh api repos/openchamber/openchamber/releases/latest --jq '.tag_name')
-          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
-            echo "Failed to resolve OpenChamber latest release tag" >&2
-            exit 1
-          fi
-          echo "version=${LATEST#v}" >> $GITHUB_OUTPUT
-          echo "OpenChamber latest: $LATEST"
-
       - name: Get code-server latest release
         id: codeserver
         run: |
@@ -141,31 +112,25 @@ jobs:
           set -euo pipefail
           BODY=$(gh api "repos/${{ github.repository }}/releases/latest" --jq '.body // empty')
           if [ -n "$BODY" ]; then
-            LOCAL_OPENCODE=$(echo "$BODY" | grep -oP 'opencode-version=\K[^\s]+' || true)
             LOCAL_CODESERVER=$(echo "$BODY" | grep -oP 'code-server-version=\K[^\s]+' || true)
             LOCAL_CODEX=$(echo "$BODY" | grep -oP 'codex-version=\K[^\s]+' || true)
             LOCAL_SERENA=$(echo "$BODY" | grep -oP 'serena-version=\K[^\s]+' || true)
             LOCAL_CLAUDECODE=$(echo "$BODY" | grep -oP 'claude-code-version=\K[^\s]+' || true)
             LOCAL_CODEXSECURITY=$(echo "$BODY" | grep -oP 'codex-security-version=\K[^\s]+' || true)
             LOCAL_ANTIGRAVITY=$(echo "$BODY" | grep -oP 'antigravity-version=\K[^\s]+' || true)
-            LOCAL_OPENCHAMBER=$(echo "$BODY" | grep -oP 'openchamber-version=\K[^\s]+' || true)
           fi
-          echo "opencode=${LOCAL_OPENCODE:-none}" >> $GITHUB_OUTPUT
           echo "codeserver=${LOCAL_CODESERVER:-none}" >> $GITHUB_OUTPUT
           echo "codex=${LOCAL_CODEX:-none}" >> $GITHUB_OUTPUT
           echo "serena=${LOCAL_SERENA:-none}" >> $GITHUB_OUTPUT
           echo "claudecode=${LOCAL_CLAUDECODE:-none}" >> $GITHUB_OUTPUT
           echo "codexsecurity=${LOCAL_CODEXSECURITY:-none}" >> $GITHUB_OUTPUT
           echo "antigravity=${LOCAL_ANTIGRAVITY:-none}" >> $GITHUB_OUTPUT
-          echo "openchamber=${LOCAL_OPENCHAMBER:-none}" >> $GITHUB_OUTPUT
-          echo "Our OpenCode: ${LOCAL_OPENCODE:-none}"
           echo "Our code-server: ${LOCAL_CODESERVER:-none}"
           echo "Our Codex: ${LOCAL_CODEX:-none}"
           echo "Our serena-agent: ${LOCAL_SERENA:-none}"
           echo "Our Claude Code: ${LOCAL_CLAUDECODE:-none}"
           echo "Our codex-security: ${LOCAL_CODEXSECURITY:-none}"
           echo "Our Antigravity CLI: ${LOCAL_ANTIGRAVITY:-none}"
-          echo "Our OpenChamber: ${LOCAL_OPENCHAMBER:-none}"
 
       # ==========================================
       # 比对版本，任意一个有更新就触发构建
@@ -204,13 +169,6 @@ jobs:
             fi
           }
 
-          # OpenCode: 上游为 npm 纯数字版本号；历史 release 锁定值曾带 v 前缀，比对前统一剥掉
-          LOCAL_OPENCODE="${{ steps.local.outputs.opencode }}"
-          check_update "OpenCode" \
-            "${LOCAL_OPENCODE#v}" \
-            "${{ steps.opencode.outputs.version }}" \
-            "https://www.npmjs.com/package/@opencode/cli/v/${{ steps.opencode.outputs.version }}"
-
           # code-server: 本地已剥 v 前缀，URL 里补回
           check_update "code-server" \
             "${{ steps.local.outputs.codeserver }}" \
@@ -246,12 +204,6 @@ jobs:
             "${{ steps.local.outputs.antigravity }}" \
             "${{ steps.antigravity.outputs.version }}" \
             "https://antigravity.google/cli"
-
-          # OpenChamber: 本地已剥 v 前缀，URL 里补回；pnpm 包与 GitHub release 同步发布
-          check_update "OpenChamber" \
-            "${{ steps.local.outputs.openchamber }}" \
-            "${{ steps.openchamber.outputs.version }}" \
-            "https://github.com/openchamber/openchamber/releases/tag/v${{ steps.openchamber.outputs.version }}"
 
           echo "has_update=$HAS_UPDATE" >> $GITHUB_OUTPUT
 
@@ -289,13 +241,11 @@ jobs:
               workflow_id: 'docker-build.yml',
               ref: 'main',
               inputs: {
-                opencode_version: '${{ steps.opencode.outputs.version }}',
                 code_server_version: '${{ steps.codeserver.outputs.version }}',
                 codex_version: '${{ steps.codex.outputs.version }}',
                 serena_version: '${{ steps.serena.outputs.version }}',
                 claude_code_version: '${{ steps.claudecode.outputs.version }}',
                 codex_security_version: '${{ steps.codexsecurity.outputs.version }}',
-                openchamber_version: '${{ steps.openchamber.outputs.version }}'
               }
             });
 
