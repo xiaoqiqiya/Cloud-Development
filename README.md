@@ -103,18 +103,18 @@ docker compose up -d opencode
 | 工作流 | 作用 | 触发与发布 |
 |---|---|---|
 | [Build Custom Base Image](.github/workflows/build-base-custom.yml) | 构建自定义 Base 和 Agent 应用层 | 手动勾选或更新检查调用时发布；相关源码的 push / PR 只做构建验证 |
-| [Check Updates](.github/workflows/check-update.yml) | 检查上游组件版本，发现变化再触发构建 | 每天北京时间 08:00、12:00、20:00 **只检查默认 custom 组合**；也支持手动运行 |
+| [Check Updates](.github/workflows/check-update.yml) | 检查上游组件版本，发现变化再触发构建 | 仅手动运行，可选择 custom、legacy 或 all |
 | [Build Base Image](.github/workflows/build-base.yml) | 构建原完整基础层 `:base`，成功后触发桌面层 | 手动或对应源码变更触发，已取消每周定时构建；PR 不发布、不级联 |
 | [Build Desktop Image](.github/workflows/build-desktop.yml) | 构建原桌面层 `:desktop`，成功后触发原动态层 | 手动、对应源码变更或 Base 成功后触发；PR 不发布、不级联 |
 | [Build and Push Docker Image](.github/workflows/docker-build.yml) | 发布原完整配置的无桌面版和桌面版 | 手动、对应源码变更、旧版版本检查或桌面层成功后触发；PR 只验证 |
 
-原发布链仍是 `Base → 桌面层 → 两个应用变体`。无桌面和带桌面两个版本均成功后，才更新正式 GitHub Release 和组件版本锁。**旧版不再由定时任务触发，但手动运行和代码变更触发仍保留。**
+原发布链仍是 `Base → 桌面层 → 两个应用变体`。无桌面和带桌面两个版本均成功后，才更新正式 GitHub Release 和组件版本锁。**所有工作流均已取消定时触发，手动运行和代码变更触发仍保留。**
 
 修改共用的 `base/**` 或 `agent/**` 时，可能同时触发新旧流程。自定义工作流不经过原发布链，也不覆盖原来的 `base`、`desktop` 或日期发行标签。
 
-## 自定义镜像自动更新
+## 手动检查自定义镜像更新
 
-定时更新针对 `base-custom / custom`，流程为：
+手动运行 `Check Updates`，默认检查 `base-custom / custom`，流程为：
 
 ```text
 读取上次成功发布的勾选配置
@@ -135,11 +135,11 @@ docker compose up -d opencode
 | `target=custom` | 默认，只检查自定义镜像 |
 | `target=legacy` | 只检查原完整配置镜像 |
 | `target=all` | 检查两套流程 |
-| `image_tag=base-custom` | 自定义组合的基础标签；其他组合可填写 `base-custom-go` 等，当前定时任务不会自动遍历这些命名组合 |
+| `image_tag=base-custom` | 自定义组合的基础标签；其他组合可填写 `base-custom-go` 等，每次只检查指定的组合 |
 
 成功记录存放在独立的预发布记录 `custom-state-<基础标签>` 中，不会成为正式 Latest Release，也不会覆盖原版版本锁。构建失败不会推进记录，后续检查仍会尝试更新。
 
-**首次没有成功记录时使用默认组件配置。** 要让自动更新沿用自己的勾选组合，应先通过 `Build Custom Base Image` 手动成功发布一次。后续自动更新会保留已保存的选择，包括明确取消的组件。
+**首次没有成功记录时使用默认组件配置。** 要让更新检查沿用自己的勾选组合，应先通过 `Build Custom Base Image` 手动成功发布一次。后续手动检查触发的更新会保留已保存的选择，包括明确取消的组件。
 
 ## 文件分工
 

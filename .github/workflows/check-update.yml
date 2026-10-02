@@ -1,11 +1,6 @@
 name: Check Updates
 
 on:
-  schedule:
-    # 北京时间 8:00 / 12:00 / 20:00，仅更新 custom。
-    - cron: '0 0 * * *'
-    - cron: '0 4 * * *'
-    - cron: '0 12 * * *'
   workflow_dispatch:
     inputs:
       target:
@@ -20,7 +15,7 @@ on:
 
 jobs:
   check:
-    # 旧版只允许显式手动检查，不再由定时器触发。
+    # 手动选择 legacy 或 all 时检查旧版。
     if: github.event_name == 'workflow_dispatch' && (inputs.target == 'legacy' || inputs.target == 'all')
     runs-on: ubuntu-latest
     permissions:
@@ -230,7 +225,7 @@ jobs:
             });
 
   check-custom:
-    if: github.event_name == 'schedule' || inputs.target != 'legacy'
+    if: inputs.target != 'legacy'
     runs-on: ubuntu-latest
     permissions:
       contents: read
