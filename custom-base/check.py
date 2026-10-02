@@ -85,22 +85,24 @@ def validate_tag(tag):
 
 
 def prepare():
-    raw = json.loads(os.environ.get("INPUTS_JSON", "{}")) or {}
+    raw = json.loads(os.environ.get("REUSABLE_INPUTS_JSON") or os.environ.get("INPUTS_JSON", "{}")) or {}
     selected = parse_inputs(raw, defaults())
     actual = resolve(selected)
     tag = validate_tag(raw.get("image_tag", "base-custom"))
     image = "ghcr.io/" + os.environ["GITHUB_REPOSITORY"].lower()
     app_tag = tag.removeprefix("base-")
+    publish = os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch" or bool(os.environ.get("REUSABLE_INPUTS_JSON"))
     config = bake_config(selected, image, tag, os.environ["GITHUB_RUN_ID"],
                          os.environ["GITHUB_RUN_ATTEMPT"],
-                         os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch")
+                         publish)
+    config["target"]["custom"]["args"].update(json.loads(os.environ.get("RESOLVED_VERSIONS_JSON", "{}")))
     bake_file = Path(os.environ["RUNNER_TEMP"]) / "custom-bake.json"
     bake_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    # 推送/PR 只检查默认组合；手动运行才发布，避免覆盖用户已选的组合。
+    # 推送/PR 只检查；手动运行或更新检查调用时才发布。
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        output.write(f"image={image}\ntag={tag}\napp_tag={app_tag}\nbake_file={bake_file}\n")
+        output.write(f"image={image}\ntag={tag}\napp_tag={app_tag}\nbake_file={bake_file}\npublish={str(publish).lower()}\n")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-        summary.write(f"基础镜像：`{image}:{tag}`；含 Agent 的应用镜像：`{image}:{app_tag}`（仅手动运行发布）\n\n")
+        summary.write(f"基础镜像：`{image}:{tag}`；含 Agent 的应用镜像：`{image}:{app_tag}`；发布：{'是' if publish else '否'}\n\n")
         summary.write("| 组件参数 | 勾选 | 实际安装（含依赖） |\n|---|---|---|\n")
         for key, value in selected.items():
             summary.write(f"| {key} | {'是' if value else '否'} | {'是' if actual[key] else '否'} |\n")

@@ -46,11 +46,16 @@ RUN case "$INSTALL_CODEX_SECURITY" in true|false) ;; *) exit 1 ;; esac; \
     fi
 
 ARG INSTALL_ANTIGRAVITY=false
+ARG ANTIGRAVITY_VERSION=latest
 # 清单只提供当前版本；安装时下载清单，保持原动态层 SHA512 校验。
 RUN case "$INSTALL_ANTIGRAVITY" in true|false) ;; *) exit 1 ;; esac; \
     if [[ "$INSTALL_ANTIGRAVITY" = true ]]; then \
       curl -fsSL --retry 10 --retry-all-errors --retry-delay 2 -o /tmp/agy-manifest.json \
         https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json; \
+      AGY_VERSION="$(jq -er '.version | strings | select(length > 0)' /tmp/agy-manifest.json)"; \
+      if [[ "$ANTIGRAVITY_VERSION" != latest && "$AGY_VERSION" != "$ANTIGRAVITY_VERSION" ]]; then \
+        echo "Antigravity 清单版本已变化，请重新运行更新检查" >&2; exit 1; \
+      fi; \
       AGY_URL="$(jq -er '.url | strings | select(startswith("https://"))' /tmp/agy-manifest.json)"; \
       AGY_SHA512="$(jq -er '.sha512 | strings | select(test("^[a-fA-F0-9]{128}$"))' /tmp/agy-manifest.json)"; \
       curl -fsSL --retry 10 --retry-all-errors --retry-delay 2 -o /tmp/agy.tar.gz "$AGY_URL"; \

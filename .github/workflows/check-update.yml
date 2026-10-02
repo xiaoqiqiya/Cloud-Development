@@ -2,14 +2,26 @@ name: Check Updates
 
 on:
   schedule:
-    # 北京时间 8:00 / 12:00 / 20:00
+    # 北京时间 8:00 / 12:00 / 20:00，仅更新 custom。
     - cron: '0 0 * * *'
     - cron: '0 4 * * *'
     - cron: '0 12 * * *'
   workflow_dispatch:
+    inputs:
+      target:
+        description: '检查范围：custom 自定义镜像 / legacy 旧版 / all 两者'
+        type: choice
+        options: [custom, legacy, all]
+        default: custom
+      image_tag:
+        description: 'custom 基础标签，沿用该标签上次成功发布时的勾选配置'
+        type: string
+        default: base-custom
 
 jobs:
   check:
+    # 旧版只允许显式手动检查，不再由定时器触发。
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'legacy' || inputs.target == 'all')
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -134,90 +146,58 @@ jobs:
 
       # ==========================================
       # 比对版本，任意一个有更新就触发构建
-      # 同时把"有更新"的项写入 /tmp/updates.json，供 notify step 使用
       # ==========================================
       - name: Compare versions
         id: compare
         run: |
           set -euo pipefail
 
-          NOW_BJ=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M')
-          UPDATES="[]"
           HAS_UPDATE="false"
 
-          # 比对单个应用版本；若有更新则记录到 UPDATES 数组
-          # 参数: app_name  local_version  upstream_version  changelog_url
+          # 比对单个应用版本；任意组件有更新即触发构建。
+          # 参数: app_name  local_version  upstream_version
           check_update() {
-            local app="$1" local_v="$2" upstream_v="$3" changelog_url="$4"
+            local app="$1" local_v="$2" upstream_v="$3"
             if [ -z "$upstream_v" ] || [ "$upstream_v" = "null" ]; then
-              echo "$app upstream version is empty or null; refusing to notify or trigger a build" >&2
+              echo "$app upstream version is empty or null; refusing to trigger a build" >&2
               exit 1
             fi
             if [ "$local_v" != "$upstream_v" ]; then
               HAS_UPDATE="true"
               echo "$app needs update: $local_v -> $upstream_v"
-              UPDATES=$(jq -nc \
-                --argjson updates "$UPDATES" \
-                --arg app "$app" \
-                --arg old "$local_v" \
-                --arg new "$upstream_v" \
-                --arg url "$changelog_url" \
-                --arg time "$NOW_BJ" \
-                '$updates + [{app_name: $app, old_version: $old, new_version: $new, changelog_url: $url, time: $time}]')
             else
               echo "$app up to date: $upstream_v"
             fi
           }
 
-          # code-server: 本地已剥 v 前缀，URL 里补回
           check_update "code-server" \
             "${{ steps.local.outputs.codeserver }}" \
-            "${{ steps.codeserver.outputs.version }}" \
-            "https://github.com/coder/code-server/releases/tag/v${{ steps.codeserver.outputs.version }}"
+            "${{ steps.codeserver.outputs.version }}"
 
-          # Codex: 本地已剥 rust-v 前缀，URL 里补回
           check_update "Codex" \
             "${{ steps.local.outputs.codex }}" \
-            "${{ steps.codex.outputs.version }}" \
-            "https://github.com/openai/codex/releases/tag/rust-v${{ steps.codex.outputs.version }}"
+            "${{ steps.codex.outputs.version }}"
 
-          # serena-agent: 数据源是 PyPI，Changelog 也指向 PyPI 版本页
           check_update "serena-agent" \
             "${{ steps.local.outputs.serena }}" \
-            "${{ steps.serena.outputs.version }}" \
-            "https://pypi.org/project/serena-agent/${{ steps.serena.outputs.version }}/"
+            "${{ steps.serena.outputs.version }}"
 
-          # Claude Code: 官方 npm 包，Changelog 指向 GitHub 上的 CHANGELOG.md
           check_update "Claude Code" \
             "${{ steps.local.outputs.claudecode }}" \
-            "${{ steps.claudecode.outputs.version }}" \
-            "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+            "${{ steps.claudecode.outputs.version }}"
 
-          # codex-security: 仅 npm 分发，GitHub tag 格式为 npm-v{version}
           check_update "codex-security" \
             "${{ steps.local.outputs.codexsecurity }}" \
-            "${{ steps.codexsecurity.outputs.version }}" \
-            "https://github.com/openai/codex-security/releases/tag/npm-v${{ steps.codexsecurity.outputs.version }}"
+            "${{ steps.codexsecurity.outputs.version }}"
 
-          # Antigravity CLI: 清单只暴露最新版，无 releases 页，changelog 指向产品页
           check_update "Antigravity CLI" \
             "${{ steps.local.outputs.antigravity }}" \
-            "${{ steps.antigravity.outputs.version }}" \
-            "https://antigravity.google/cli"
+            "${{ steps.antigravity.outputs.version }}"
 
           echo "has_update=$HAS_UPDATE" >> $GITHUB_OUTPUT
 
-          # 把待通知项写入文件（GITHUB_OUTPUT 不适合承载 JSON 数组）
-          echo "$UPDATES" > /tmp/updates.json
-          # 这道边界校验专门防止限流/响应结构漂移再次把字符串 null 发进飞书卡片。
-          jq -e 'type == "array" and all(.[]; (.new_version | type == "string") and (.new_version != "") and (.new_version != "null"))' /tmp/updates.json >/dev/null
-          echo "Updates to notify:"
-          jq '.' /tmp/updates.json
-
       - name: Generate GitHub App token
-        # 用 GitHub App installation token 而非默认 GITHUB_TOKEN 派发 workflow_dispatch。
-        # 由 GITHUB_TOKEN 派发的 run，其完成时派发的 workflow_run 事件会被 GHA 防递归机制抑制，
-        # 导致 notify.yml 收不到动态层构建完成通知；改用 App token 可正常派发事件。
+        # 使用 GitHub App installation token 派发动态层构建。
         id: app-token
         if: steps.compare.outputs.has_update == 'true'
         uses: actions/create-github-app-token@v3
@@ -249,92 +229,35 @@ jobs:
               }
             });
 
-      # ==========================================
-      # 通知飞书：每个有更新的 app 发一张卡片
-      # 放在 Trigger build 之后，并用 if: always()
-      # 这样即使 trigger 派发失败也能收到"发现新版本"通知，不被互相阻塞
-      # ==========================================
-      - name: Notify Feishu per update
-        if: always() && steps.compare.outputs.has_update == 'true'
+  check-custom:
+    if: github.event_name == 'schedule' || inputs.target != 'legacy'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.versions.outputs.changed }}
+      image_tag: ${{ steps.versions.outputs.image_tag }}
+      config_json: ${{ steps.versions.outputs.config_json }}
+      versions_json: ${{ steps.versions.outputs.versions_json }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Check selected custom component versions
+        id: versions
         env:
-          APP_ID: ${{ secrets.FEISHU_APP_ID }}
-          APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          USER_ID: ${{ secrets.FEISHU_USER_ID }}
-        run: |
-          set -euo pipefail
+          GH_TOKEN: ${{ github.token }}
+          CUSTOM_IMAGE_TAG: ${{ inputs.image_tag || 'base-custom' }}
+        run: python3 custom-base/update.py --check
 
-          # 1. 获取 tenant_access_token（沿用 notify.yml 模式：不 -f，需读 code/msg 定位错误）
-          curl -sS -X POST \
-            -H 'Content-Type: application/json' \
-            -d "{\"app_id\":\"${APP_ID}\",\"app_secret\":\"${APP_SECRET}\"}" \
-            https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
-            -o token_response.json
-
-          TOKEN=$(jq -r '.tenant_access_token // empty' token_response.json)
-          if [ -z "$TOKEN" ]; then
-            CODE=$(jq -r '.code // empty' token_response.json)
-            MSG=$(jq -r '.msg // empty' token_response.json)
-            echo "Failed to fetch tenant_access_token. code=${CODE}, msg=${MSG}" >&2
-            exit 1
-          fi
-          # 先 mask 再写 output，避免打印阶段泄露
-          echo "::add-mask::${TOKEN}"
-
-          # 2. 逐条发送通知
-          COUNT=$(jq 'length' /tmp/updates.json)
-          echo "Sending ${COUNT} update notification(s)..."
-
-          for i in $(seq 0 $((COUNT - 1))); do
-            APP_NAME=$(jq -r ".[$i].app_name" /tmp/updates.json)
-            OLD_VERSION=$(jq -r ".[$i].old_version" /tmp/updates.json)
-            NEW_VERSION=$(jq -r ".[$i].new_version" /tmp/updates.json)
-            CHANGELOG_URL=$(jq -r ".[$i].changelog_url" /tmp/updates.json)
-            TIME=$(jq -r ".[$i].time" /tmp/updates.json)
-
-            # 卡片 content：序列化后的 JSON 字符串
-            CONTENT=$(jq -nc \
-              --arg template_id "AAqv2jtyQI8ay" \
-              --arg app_name "$APP_NAME" \
-              --arg old_version "$OLD_VERSION" \
-              --arg new_version "$NEW_VERSION" \
-              --arg changelog_url "$CHANGELOG_URL" \
-              --arg time "$TIME" \
-              '{
-                type: "template",
-                data: {
-                  template_id: $template_id,
-                  template_version_name: "1.0.7",
-                  template_variable: {
-                    App_Name: $app_name,
-                    Old_Version: $old_version,
-                    New_Version: $new_version,
-                    Changelog_URL: $changelog_url,
-                    Time: $time
-                  }
-                }
-              }')
-
-            # 外层请求体；所有字段经 jq 拼装，不出现在命令行回显
-            PAYLOAD=$(jq -nc \
-              --arg receive_id "$USER_ID" \
-              --arg content "$CONTENT" \
-              '{receive_id: $receive_id, msg_type: "interactive", content: $content}')
-
-            # 版本号本身是公开信息，可打印以便追踪；USER_ID/TOKEN 不出现在 echo 中
-            echo "Notifying ${APP_NAME}: ${OLD_VERSION} -> ${NEW_VERSION}"
-
-            # 不 -f：业务错误返回 HTTP 400 + JSON body，需要读 code/msg
-            echo "$PAYLOAD" | curl -sS -X POST \
-              -H 'Content-Type: application/json; charset=utf-8' \
-              -H "Authorization: Bearer ${TOKEN}" \
-              --data-binary @- \
-              "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=user_id" \
-              -o response.json
-
-            CODE=$(jq -r '.code // empty' response.json)
-            MSG=$(jq -r '.msg // empty' response.json)
-            if [ "$CODE" != "0" ]; then
-              echo "Feishu API returned non-zero code for ${APP_NAME}: code=${CODE}, msg=${MSG}" >&2
-              exit 1
-            fi
-          done
+  build-custom:
+    needs: check-custom
+    if: needs.check-custom.outputs.changed == 'true'
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/build-base-custom.yml
+    with:
+      image_tag: ${{ needs.check-custom.outputs.image_tag }}
+      config_json: ${{ needs.check-custom.outputs.config_json }}
+      versions_json: ${{ needs.check-custom.outputs.versions_json }}
+    secrets: inherit

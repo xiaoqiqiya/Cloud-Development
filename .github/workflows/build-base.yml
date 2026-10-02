@@ -13,9 +13,6 @@ on:
     paths:
       - 'Dockerfile.base'
       - 'base/**'
-  schedule:
-    # 每周一北京时间 04:00 (UTC 周日 20:00)
-    - cron: '0 20 * * 0'
   workflow_dispatch:
 
 env:
@@ -103,9 +100,7 @@ jobs:
 
     steps:
       - name: Generate GitHub App token
-        # 用 GitHub App installation token 而非默认 GITHUB_TOKEN 派发 workflow_dispatch。
-        # 由 GITHUB_TOKEN 派发的 run，其完成时派发的 workflow_run 事件会被 GHA 防递归机制抑制，
-        # 导致 notify.yml 收不到下游构建完成通知；改用 App token 可正常派发事件。
+        # 使用 GitHub App installation token 派发下游构建。
         id: app-token
         uses: actions/create-github-app-token@v3
         with:

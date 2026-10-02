@@ -6,7 +6,7 @@ on:
     paths:
       - 'Dockerfile.base.custom'
       - 'Dockerfile.custom'
-      - 'custom-base/check.py'
+      - 'custom-base/*.py'
       - 'custom-base/*.sh'
       - 'agent/**'
       - 'base/**'
@@ -15,7 +15,7 @@ on:
     paths:
       - 'Dockerfile.base.custom'
       - 'Dockerfile.custom'
-      - 'custom-base/check.py'
+      - 'custom-base/*.py'
       - 'custom-base/*.sh'
       - 'agent/**'
       - 'base/**'
@@ -121,12 +121,26 @@ on:
         description: 'Serena MCP（含常驻服务，取消时同步关闭自启与健康检查）'
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      image_tag:
+        description: '用于发布串行控制的 custom 基础标签'
+        required: true
+        type: string
+      config_json:
+        description: '上次成功发布的组件勾选配置'
+        required: true
+        type: string
+      versions_json:
+        description: '本次检测到的已启用组件版本'
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
-# 同一标签串行发布；自动检查不覆盖手动选择的镜像。
+# 同一标签的手动发布和自动更新串行运行。
 concurrency:
   group: custom-base-${{ inputs.image_tag || github.ref }}
   cancel-in-progress: false
@@ -142,10 +156,14 @@ jobs:
         id: options
         env:
           INPUTS_JSON: ${{ toJSON(inputs) }}
+          REUSABLE_INPUTS_JSON: ${{ inputs.config_json }}
+          VERSIONS_JSON: ${{ inputs.versions_json }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 custom-base/check.py --self-test
+          python3 custom-base/test-update.py
           bash custom-base/test-healthcheck.sh
-          python3 custom-base/check.py --prepare
+          python3 custom-base/update.py --prepare
 
       # 沿用旧 Base workflow 的空间清理、Buildx、GHCR 登录和 registry 缓存。
       - name: Free runner disk space
@@ -163,7 +181,7 @@ jobs:
           cleanup: false
 
       - name: Log in to Container Registry
-        if: github.event_name == 'workflow_dispatch'
+        if: steps.options.outputs.publish == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -174,13 +192,14 @@ jobs:
         id: build
         env:
           BAKE_FILE: ${{ steps.options.outputs.bake_file }}
+          PUBLISH_CUSTOM: ${{ steps.options.outputs.publish }}
         run: |
           flags=()
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then flags+=(--push); fi
+          if [ "$PUBLISH_CUSTOM" = true ]; then flags+=(--push); fi
           docker buildx bake --file "$BAKE_FILE" --metadata-file "$RUNNER_TEMP/custom-metadata.json" "${flags[@]}"
 
       - name: Record published image
-        if: github.event_name == 'workflow_dispatch'
+        if: steps.options.outputs.publish == 'true'
         env:
           IMAGE: ${{ steps.options.outputs.image }}
           TAG: ${{ steps.options.outputs.tag }}
@@ -191,3 +210,9 @@ jobs:
           printf '\n基础镜像：`%s:%s@%s`\n' "$IMAGE" "$TAG" "$BASE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
           printf '\n应用镜像（含所选 Agent）：`%s:%s@%s`\n' "$IMAGE" "$APP_TAG" "$APP_DIGEST" >> "$GITHUB_STEP_SUMMARY"
           printf '\n本次组合固定标签：`%s:%s-%s-%s`\n' "$IMAGE" "$APP_TAG" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save successful custom configuration and versions
+        if: steps.options.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 custom-base/update.py --record

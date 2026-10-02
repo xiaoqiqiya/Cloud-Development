@@ -16,7 +16,26 @@
 
 如果输入 `base-custom-go`，对应的应用标签为 `custom-go`。两个镜像均额外发布 `标签-运行ID-重试次数`，便于找回当次组合。
 
-**只有手动运行才推送镜像。** push / PR 使用默认配置做构建检查，避免把已经手动选择的组合覆盖掉。新流程不会派发旧桌面/动态层构建，也不会更新原来的 `base`、`desktop`、正式 release 标签或版本锁。
+**手动运行或更新检查调用时才推送镜像。** push / PR 使用默认配置做构建检查，避免把已经手动选择的组合覆盖掉。新流程不会派发旧桌面/动态层构建，也不会更新原来的 `base`、`desktop`、正式 release 标签或版本锁。
+
+## 自动检查更新
+
+`Check Updates` 每天北京时间 **08:00、12:00、20:00** 检查默认 `base-custom` / `custom` 组合。旧 `Build Base Image` 已取消每周定时构建；定时检查也不会再触发旧版发布链。旧版的手动构建和代码变更触发仍保留。
+
+更新流程：读取该标签上次成功发布的勾选配置 → 只检查 code-server 和已启用的 Agent → 有版本变化时调用 `Build Custom Base Image`，联动基础层和应用层。未选中的 Agent 不检查、不安装；版本没有变化时跳过构建。
+
+需要手动检查时，进入 **Actions → Check Updates → Run workflow**：
+
+- `target=custom`：默认选项，只更新自定义镜像。
+- `target=legacy`：只检查并更新原完整镜像流程。
+- `target=all`：两套流程都检查。
+- `image_tag`：自定义基础标签，默认 `base-custom`；例如填写 `base-custom-go`，就检查 `base-custom-go` / `custom-go`。其他命名组合目前需要在这里手动指定。
+
+两层镜像均成功发布后，才把勾选配置、精确组件版本和镜像摘要保存到独立的预发布记录 `custom-state-<基础标签>`。这份记录不会成为正式 Latest Release，也不会改写旧版版本锁。失败不会推进记录，下一次检查仍会尝试更新。
+
+**首次没有记录时使用默认配置**，包括 Go、音视频和 Codex；此前发布、但没有记录的组合无法自动还原，请先手动按需要勾选并成功发布一次。后续自动更新会沿用成功保存的配置；排队期间如果有新的手动发布，也会重新读取最新选择。
+
+发布时会把上游解析出的精确版本传入动态层，确保 Agent 更新能使对应安装层的缓存失效，基础组件仍复用缓存。
 
 ## 默认组件与依赖
 
@@ -87,6 +106,7 @@ docker run -d --name cloud-custom -p 8080:8080 -e CODE_SERVER_PASSWORD=请替换
 
 # 只检查开关、默认值和依赖逻辑，不下载组件。
 python custom-base/check.py --self-test
+python custom-base/test-update.py
 ```
 
 浏览器、音视频、文档和逆向的 Python 包按组件分开安装，不调用原来的全量 `base/install-python.sh`。Go 依赖缓存仅在勾选预下载时安装。whisper 的转录模型按需另行下载。
