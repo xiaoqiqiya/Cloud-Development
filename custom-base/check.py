@@ -1,5 +1,7 @@
 """可选 Base 的参数解析、依赖检查和镜像自检；仅用 Python 标准库。"""
 
+import configparser
+import io
 import json
 import os
 from pathlib import Path
@@ -35,10 +37,18 @@ COMMANDS = {
     "INSTALL_CODEGRAPH": ("codegraph",),
     "INSTALL_CLASH": ("mihomo",),
 }
+AGENT_COMMANDS = {
+    "INSTALL_CODEX": ("codex",),
+    "INSTALL_CLAUDE_CODE": ("claude",),
+    "INSTALL_CODEX_SECURITY": ("codex-security",),
+    "INSTALL_ANTIGRAVITY": ("agy",),
+    "INSTALL_SERENA": ("serena",),
+}
 
 
 def defaults():
-    text = (ROOT / "Dockerfile.base.custom").read_text(encoding="utf-8")
+    text = "\n".join((ROOT / name).read_text(encoding="utf-8")
+                     for name in ("Dockerfile.base.custom", "Dockerfile.custom"))
     return {key: value == "true" for key, value in re.findall(
         r"^ARG ((?:INSTALL_\w+|PREWARM_GO))=(true|false)$", text, re.M
     )}
@@ -80,16 +90,72 @@ def prepare():
     actual = resolve(selected)
     tag = validate_tag(raw.get("image_tag", "base-custom"))
     image = "ghcr.io/" + os.environ["GITHUB_REPOSITORY"].lower()
+    app_tag = tag.removeprefix("base-")
+    config = bake_config(selected, image, tag, os.environ["GITHUB_RUN_ID"],
+                         os.environ["GITHUB_RUN_ATTEMPT"],
+                         os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch")
+    bake_file = Path(os.environ["RUNNER_TEMP"]) / "custom-bake.json"
+    bake_file.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     # 推送/PR 只检查默认组合；手动运行才发布，避免覆盖用户已选的组合。
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        output.write(f"image={image}\ntag={tag}\nbuild_args<<CUSTOM_ARGS\n")
-        output.writelines(f"{key}={str(value).lower()}\n" for key, value in selected.items())
-        output.write("CUSTOM_ARGS\n")
+        output.write(f"image={image}\ntag={tag}\napp_tag={app_tag}\nbake_file={bake_file}\n")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-        summary.write(f"目标镜像：`{image}:{tag}`（仅手动运行发布）\n\n")
+        summary.write(f"基础镜像：`{image}:{tag}`；含 Agent 的应用镜像：`{image}:{app_tag}`（仅手动运行发布）\n\n")
         summary.write("| 组件参数 | 勾选 | 实际安装（含依赖） |\n|---|---|---|\n")
         for key, value in selected.items():
             summary.write(f"| {key} | {'是' if value else '否'} | {'是' if actual[key] else '否'} |\n")
+
+
+def bake_config(selected, image, tag, run_id, attempt, publish):
+    targets = {}
+    for name, dockerfile, image_tag in (("base", "Dockerfile.base.custom", tag),
+                                       ("custom", "Dockerfile.custom", tag.removeprefix("base-"))):
+        target = {
+            "context": ".", "dockerfile": dockerfile, "platforms": ["linux/amd64"],
+            "tags": [f"{image}:{image_tag}", f"{image}:{image_tag}-{run_id}-{attempt}"],
+            "args": {key: str(value).lower() for key, value in selected.items()
+                     if (key in AGENT_COMMANDS) == (name == "custom")},
+            "cache-from": [f"type=registry,ref={image}:buildcache-{image_tag}"],
+        }
+        if publish:
+            target["cache-to"] = [f"type=registry,ref={image}:buildcache-{image_tag},mode=min"]
+        if name == "custom":
+            target["contexts"] = {"custom-base": "target:base"}
+            target["args"]["BASE_IMAGE"] = "custom-base"
+        targets[name] = target
+    return {"group": {"default": {"targets": ["base", "custom"]}}, "target": targets}
+
+
+def service_config(text, serena):
+    config = configparser.ConfigParser(interpolation=None)
+    config.read_string(text)
+    if not serena:
+        config.remove_section("program:serena")
+    output = io.StringIO()
+    config.write(output, space_around_delimiters=False)
+    return output.getvalue()
+
+
+def check_agents():
+    selected = {}
+    for key, commands in AGENT_COMMANDS.items():
+        value = os.environ[key]
+        if value not in ("true", "false"):
+            raise ValueError(f"{key} 必须为 true 或 false")
+        selected[key] = value == "true"
+        for command in commands:
+            assert bool(shutil.which(command)) == selected[key], f"Agent 开关与命令不一致: {key} / {command}"
+            if selected[key]:
+                subprocess.run([command, "--help"], check=True, stdout=subprocess.DEVNULL)
+    assert shutil.which("code-server"), "缺少 code-server"
+    config = Path("/etc/supervisor/supervisord.conf")
+    config.write_text(service_config(config.read_text(), selected["INSTALL_SERENA"]))
+    metadata = Path("/usr/local/share/base-custom.json")
+    content = json.loads(metadata.read_text())
+    content["selected"].update(selected)
+    content["installed"].update(selected)
+    metadata.write_text(json.dumps(content, indent=2) + "\n")
+    print("Agent 组件及启动配置自检通过")
 
 
 def check_image():
@@ -123,11 +189,31 @@ def check_image():
 
 def self_test():
     baseline = defaults()
-    assert set(baseline) == set(COMMANDS) | {"INSTALL_PYTHON_PACKAGES", "PREWARM_GO"}
+    assert set(baseline) == set(COMMANDS) | set(AGENT_COMMANDS) | {"INSTALL_PYTHON_PACKAGES", "PREWARM_GO"}
     off = dict.fromkeys(baseline, False)
     assert not any(resolve(off).values())
     assert all(resolve(dict.fromkeys(baseline, True)).values())
     assert baseline["INSTALL_MEDIA"]
+    assert {key for key in AGENT_COMMANDS if baseline[key]} == {"INSTALL_CODEX"}
+    for selected in (baseline, off, dict.fromkeys(baseline, True)):
+        for publish in (False, True):
+            config = bake_config(selected, "ghcr.io/example/dev", "base-custom-demo", "123", "1", publish)
+            base, app = config["target"]["base"], config["target"]["custom"]
+            assert set(base["args"]) == set(baseline) - set(AGENT_COMMANDS)
+            assert set(app["args"]) == set(AGENT_COMMANDS) | {"BASE_IMAGE"}
+            assert app["contexts"] == {"custom-base": "target:base"}
+            assert app["tags"] == ["ghcr.io/example/dev:custom-demo", "ghcr.io/example/dev:custom-demo-123-1"]
+            for key, value in selected.items():
+                target = app if key in AGENT_COMMANDS else base
+                assert target["args"][key] == str(value).lower()
+            assert ("cache-to" in app) == publish
+    original = (ROOT / "base/supervisord.conf").read_text(encoding="utf-8")
+    for serena in (False, True):
+        config = configparser.ConfigParser(interpolation=None)
+        config.read_string(service_config(original, serena))
+        assert config.has_section("program:serena") == serena
+        assert config["program:code-server"]["autostart"] == "true"
+        assert config["program:dockerd"]["autostart"] == "false"
     # 明确取消 true 默认值时必须保留 false，不能用 a || default 回退。
     assert parse_inputs({key.lower(): False for key in baseline}, baseline) == off
     for key in baseline:
@@ -160,4 +246,4 @@ def self_test():
 
 
 if __name__ == "__main__":
-    {"--prepare": prepare, "--image": check_image, "--self-test": self_test}[sys.argv[1]]()
+    {"--prepare": prepare, "--image": check_image, "--agents": check_agents, "--self-test": self_test}[sys.argv[1]]()

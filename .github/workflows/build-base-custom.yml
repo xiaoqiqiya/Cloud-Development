@@ -5,13 +5,19 @@ on:
     branches: [main]
     paths:
       - 'Dockerfile.base.custom'
+      - 'Dockerfile.custom'
       - 'custom-base/check.py'
+      - 'custom-base/*.sh'
+      - 'agent/**'
       - 'base/**'
   pull_request:
     branches: [main]
     paths:
       - 'Dockerfile.base.custom'
+      - 'Dockerfile.custom'
       - 'custom-base/check.py'
+      - 'custom-base/*.sh'
+      - 'agent/**'
       - 'base/**'
   workflow_dispatch:
     inputs:
@@ -95,6 +101,26 @@ on:
         description: '预下载原 Go 项目依赖（自动安装 Go，明显增大镜像）'
         type: boolean
         default: false
+      install_codex:
+        description: 'Codex CLI（AI Agent 默认仅保留这一项）'
+        type: boolean
+        default: true
+      install_claude_code:
+        description: 'Claude Code + ccline + 现有补丁'
+        type: boolean
+        default: false
+      install_codex_security:
+        description: 'Codex Security CLI'
+        type: boolean
+        default: false
+      install_antigravity:
+        description: 'Antigravity CLI（agy）'
+        type: boolean
+        default: false
+      install_serena:
+        description: 'Serena MCP（含常驻服务，取消时同步关闭自启与健康检查）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -118,6 +144,7 @@ jobs:
           INPUTS_JSON: ${{ toJSON(inputs) }}
         run: |
           python3 custom-base/check.py --self-test
+          bash custom-base/test-healthcheck.sh
           python3 custom-base/check.py --prepare
 
       # 沿用旧 Base workflow 的空间清理、Buildx、GHCR 登录和 registry 缓存。
@@ -143,27 +170,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and optionally push custom base
+      - name: Build and optionally push custom base and agents
         id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.base.custom
-          platforms: linux/amd64
-          push: ${{ github.event_name == 'workflow_dispatch' }}
-          tags: |
-            ${{ steps.options.outputs.image }}:${{ steps.options.outputs.tag }}
-            ${{ steps.options.outputs.image }}:${{ steps.options.outputs.tag }}-${{ github.run_id }}-${{ github.run_attempt }}
-          build-args: ${{ steps.options.outputs.build_args }}
-          cache-from: type=registry,ref=${{ steps.options.outputs.image }}:buildcache-${{ steps.options.outputs.tag }}
-          cache-to: ${{ github.event_name == 'workflow_dispatch' && format('type=registry,ref={0}:buildcache-{1},mode=min', steps.options.outputs.image, steps.options.outputs.tag) || '' }}
+        env:
+          BAKE_FILE: ${{ steps.options.outputs.bake_file }}
+        run: |
+          flags=()
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then flags+=(--push); fi
+          docker buildx bake --file "$BAKE_FILE" --metadata-file "$RUNNER_TEMP/custom-metadata.json" "${flags[@]}"
 
       - name: Record published image
         if: github.event_name == 'workflow_dispatch'
         env:
           IMAGE: ${{ steps.options.outputs.image }}
           TAG: ${{ steps.options.outputs.tag }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          APP_TAG: ${{ steps.options.outputs.app_tag }}
         run: |
-          printf '\n发布成功：`%s:%s@%s`\n' "$IMAGE" "$TAG" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
-          printf '\n本次组合固定标签：`%s:%s-%s-%s`\n' "$IMAGE" "$TAG" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"
+          BASE_DIGEST=$(jq -er '.base["containerimage.digest"]' "$RUNNER_TEMP/custom-metadata.json")
+          APP_DIGEST=$(jq -er '.custom["containerimage.digest"]' "$RUNNER_TEMP/custom-metadata.json")
+          printf '\n基础镜像：`%s:%s@%s`\n' "$IMAGE" "$TAG" "$BASE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf '\n应用镜像（含所选 Agent）：`%s:%s@%s`\n' "$IMAGE" "$APP_TAG" "$APP_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf '\n本次组合固定标签：`%s:%s-%s-%s`\n' "$IMAGE" "$APP_TAG" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"

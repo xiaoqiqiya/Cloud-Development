@@ -271,7 +271,7 @@ RUN if [[ "$INSTALL_CLASH" = true ]]; then \
       rm -f /tmp/mihomo; rm -rf /var/lib/apt/lists/*; \
     fi
 
-# 复用启动约定，可通过原动态层 Dockerfile 的 BASE_IMAGE 参数继续构建。
+# 复用启动约定，配套 Dockerfile.custom 选择需要的 Agent。
 COPY base/entrypoint.sh base/healthcheck.sh base/init-clash.sh /usr/local/bin/
 COPY base/supervisord.conf /etc/supervisor/supervisord.conf
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/healthcheck.sh /usr/local/bin/init-clash.sh
