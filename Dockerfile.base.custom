@@ -1,0 +1,284 @@
+# syntax=docker/dockerfile:1
+# 可选组件版 Base：配套 build-base-custom.yml；使用独立的 base-custom 标签。
+# 版本沿用 Dockerfile.base，原文件及原发布链不受影响。
+FROM node:24.10.0-bookworm-slim
+
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+ARG DEBIAN_FRONTEND=noninteractive
+ARG PNPM_VERSION=latest
+
+# 必选：基础开发/编译工具、Node/npm/pnpm、Python/uv、容器启动依赖。
+RUN test "$(dpkg --print-architecture)" = amd64 \
+    && sed -i '/^path-exclude \/usr\/share\/locale\/\*$/d' /etc/dpkg/dpkg.cfg.d/docker \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       ca-certificates curl gnupg git bash gosu supervisor sudo tini locales \
+       openssh-client openssh-server python3 python3-pip python3-venv python-is-python3 \
+       build-essential cmake pkg-config libssl-dev libsqlite3-dev sqlite3 \
+       vim nano tmux ripgrep jq wget unzip zip xz-utils zstd p7zip-full rsync \
+       procps iproute2 lsof netcat-openbsd dnsutils file less tree bubblewrap \
+    && sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen && rm -rf /var/lib/apt/lists/* \
+    && npm install -g "pnpm@${PNPM_VERSION}" && npm cache clean --force \
+    && corepack enable yarn && corepack prepare yarn@1.22.22 --activate \
+    && curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+
+ENV HOME=/home/app \
+    PNPM_HOME=/home/app/.local/share/pnpm \
+    GOPATH=/home/app/go \
+    BUN_INSTALL=/opt/bun \
+    RUSTUP_HOME=/opt/rustup \
+    CARGO_HOME=/opt/cargo \
+    JAVA_HOME=/usr/lib/jvm/java-21-openjdk-current \
+    GRADLE_HOME=/opt/gradle-9.0.0 \
+    ANDROID_SDK_ROOT=/opt/android-sdk \
+    ANDROID_HOME=/opt/android-sdk \
+    PLAYWRIGHT_BROWSERS_PATH=/home/app/.cache/ms-playwright \
+    PLAYWRIGHT_MCP_HEADLESS=1 \
+    PLAYWRIGHT_MCP_BROWSER=chrome \
+    PLAYWRIGHT_MCP_SANDBOX=0 \
+    ELECTRON_CACHE=/opt/electron-cache \
+    CODEGRAPH_NO_UPDATE_CHECK=1 \
+    HYPERFRAMES_NO_UPDATE_CHECK=1 \
+    LANG=zh_CN.UTF-8 LANGUAGE=zh_CN:zh LC_ALL=zh_CN.UTF-8 \
+    EDITOR=vim PIP_BREAK_SYSTEM_PACKAGES=1
+ENV PATH="/usr/local/go/bin:/home/app/go/bin:/opt/bun/bin:/opt/cargo/bin:/opt/flutter/bin:/opt/gradle-9.0.0/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/android-sdk/build-tools/35.0.1:/opt/apk-tools/bin:/opt/apk-tools/jadx/bin:/opt/apk-tools/dex2jar:/usr/lib/jvm/java-21-openjdk-current/bin:/home/app/.local/share/pnpm:${PATH}"
+
+RUN useradd --create-home --shell /bin/bash --uid 10001 app \
+    && mkdir -p /workspace /home/app/.config/code-server \
+       /home/app/.cache /home/app/.local/share/code-server "${PNPM_HOME}" "${GOPATH}" \
+    && chown -R app:app /home/app /workspace && chmod g+rws /workspace
+
+# 与 workflow_dispatch 复选框一一对应。依赖自动补齐，全部取消也能构建。
+ARG INSTALL_GO=true
+ARG INSTALL_RUST=true
+ARG INSTALL_BUN=true
+ARG INSTALL_DOCKER=true
+ARG INSTALL_GH=true
+ARG INSTALL_NODE_TOOLS=false
+ARG INSTALL_JAVA=false
+ARG INSTALL_ANDROID=false
+ARG INSTALL_FLUTTER=false
+ARG INSTALL_BROWSER=false
+ARG INSTALL_OFFICE=false
+ARG INSTALL_REVERSE=false
+ARG INSTALL_WINDOWS=false
+ARG INSTALL_MEDIA=true
+ARG INSTALL_PYTHON_PACKAGES=false
+ARG INSTALL_CLOUD=false
+ARG INSTALL_CODEGRAPH=false
+ARG INSTALL_CLASH=false
+ARG PREWARM_GO=false
+
+RUN for option in "${!INSTALL_@}" PREWARM_GO; do \
+      case "${!option}" in true|false) ;; *) echo "${option} 必须为 true 或 false" >&2; exit 1 ;; esac; \
+    done
+
+ARG GOLANG_VERSION=1.26.4
+RUN if [[ "$INSTALL_GO" = true || "$PREWARM_GO" = true ]]; then \
+      curl -fsSL "https://go.dev/dl/go${GOLANG_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xzf -; \
+      GOBIN=/usr/local/bin go install golang.org/x/tools/gopls@latest; \
+      GOBIN=/usr/local/bin go install golang.org/x/vuln/cmd/govulncheck@latest; \
+      go clean -cache -modcache; \
+      rm -rf /usr/local/go/test /usr/local/go/doc /usr/local/go/misc /usr/local/go/api; \
+      chown -R app:app "$GOPATH" /home/app/.cache; \
+    fi
+
+ARG RUST_VERSION=1.95.0
+RUN if [[ "$INSTALL_RUST" = true ]]; then \
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain "$RUST_VERSION" --profile minimal; \
+      rustup component add clippy rustfmt rust-src; \
+      rm -rf "$RUSTUP_HOME"/toolchains/*/share/doc "$RUSTUP_HOME"/toolchains/*/share/man; \
+      chown -R app:app "$RUSTUP_HOME" "$CARGO_HOME"; \
+    fi
+
+ARG BUN_VERSION=1.3.14
+RUN if [[ "$INSTALL_BUN" = true ]]; then \
+      curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}"; \
+      ln -sf /opt/bun/bin/bun /usr/local/bin/bun; \
+      ln -sf /opt/bun/bin/bunx /usr/local/bin/bunx; \
+      chown -R app:app /opt/bun; \
+    fi
+
+# Java/Gradle 也供 Android、Flutter、APK 逆向工具使用。
+RUN if [[ "$INSTALL_JAVA" = true || "$INSTALL_ANDROID" = true || "$INSTALL_FLUTTER" = true || "$INSTALL_REVERSE" = true ]]; then \
+      curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public | gpg --dearmor -o /usr/share/keyrings/adoptium.gpg; \
+      echo 'deb [signed-by=/usr/share/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb bookworm main' > /etc/apt/sources.list.d/adoptium.list; \
+      apt-get update; apt-get install -y --no-install-recommends temurin-21-jdk; \
+      ln -s /usr/lib/jvm/temurin-21-jdk-amd64 "$JAVA_HOME"; \
+      curl -fsSL https://services.gradle.org/distributions/gradle-9.0-bin.zip -o /tmp/gradle.zip; \
+      unzip -q /tmp/gradle.zip -d /opt; \
+      rm -f /tmp/gradle.zip; rm -rf /var/lib/apt/lists/*; \
+    fi
+
+RUN if [[ "$INSTALL_ANDROID" = true || "$INSTALL_FLUTTER" = true ]]; then \
+      mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"; \
+      curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/android.zip; \
+      unzip -q /tmp/android.zip -d /tmp/android; \
+      mv /tmp/android/cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"; \
+      (yes || true) | sdkmanager --licenses > /dev/null; \
+      sdkmanager --install 'build-tools;35.0.1' 'build-tools;30.0.2' platform-tools \
+        'platforms;android-36' 'platforms;android-35' 'platforms;android-34' 'platforms;android-30'; \
+      rm -rf /tmp/android.zip /tmp/android "$ANDROID_SDK_ROOT/.temp"; \
+      chown -R app:app "$ANDROID_SDK_ROOT"; \
+    fi
+
+ARG FLUTTER_VERSION=3.44.4
+RUN if [[ "$INSTALL_FLUTTER" = true ]]; then \
+      curl -fsSL "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" -o /tmp/flutter.tar.xz; \
+      tar -xf /tmp/flutter.tar.xz -C /opt; rm -f /tmp/flutter.tar.xz; \
+      chown -R app:app /opt/flutter; \
+      gosu app flutter --version; \
+    fi
+
+RUN if [[ "$INSTALL_GH" = true ]]; then \
+      curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli.gpg; \
+      echo 'deb [signed-by=/usr/share/keyrings/githubcli.gpg] https://cli.github.com/packages stable main' > /etc/apt/sources.list.d/github-cli.list; \
+      apt-get update; apt-get install -y --no-install-recommends gh; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
+RUN if [[ "$INSTALL_NODE_TOOLS" = true ]]; then \
+      npm install -g typescript eslint prettier esbuild tsx turbo oxlint vitest @vscode/vsce; \
+      npm cache clean --force; \
+    fi
+
+ARG WRANGLER_VERSION=latest
+ARG EAS_CLI_VERSION=latest
+ARG LARK_CLI_VERSION=latest
+ARG LARK_MCP_VERSION=latest
+RUN if [[ "$INSTALL_CLOUD" = true ]]; then \
+      npm install -g "wrangler@$WRANGLER_VERSION" "eas-cli@$EAS_CLI_VERSION" \
+        "@larksuite/cli@$LARK_CLI_VERSION" "@larksuiteoapi/lark-mcp@$LARK_MCP_VERSION"; \
+      npm cache clean --force; \
+    fi
+
+# 浏览器同时是 Hyperframes 的依赖；安装各自匹配版本，不伪造 Chromium 修订号。
+ARG PLAYWRIGHT_MCP_VERSION=0.0.70
+RUN if [[ "$INSTALL_BROWSER" = true || "$INSTALL_MEDIA" = true ]]; then \
+      curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg; \
+      echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main' > /etc/apt/sources.list.d/google-chrome.list; \
+      apt-get update; apt-get install -y --no-install-recommends google-chrome-stable fonts-noto-cjk; \
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install -g "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION"; \
+      python3 -m pip install --no-cache-dir 'scrapling[all]>=0.4.2'; \
+      python3 -m playwright install --with-deps chromium; \
+      scrapling install --force; \
+      npm cache clean --force; rm -rf /var/lib/apt/lists/*; \
+      chown -R app:app /home/app/.cache; \
+    fi
+
+RUN if [[ "$INSTALL_DOCKER" = true || "$INSTALL_MEDIA" = true ]]; then \
+      curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker.gpg; \
+      echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable' > /etc/apt/sources.list.d/docker.list; \
+      apt-get update; apt-get install -y --no-install-recommends docker-ce docker-ce-cli docker-buildx-plugin docker-compose-plugin iptables; \
+      rm -rf /var/lib/apt/lists/*; usermod -aG docker app; \
+    fi
+
+RUN if [[ "$INSTALL_OFFICE" = true ]]; then \
+      apt-get update; apt-get install -y --no-install-recommends \
+        libreoffice-calc libreoffice-writer libreoffice-impress libreoffice-draw \
+        inkscape imagemagick ghostscript libheif-examples pandoc poppler-utils fonts-noto-cjk; \
+      npm install -g pptxgenjs prismjs mathjax-full skia-canvas pdf-lib pdfjs-dist; \
+      python3 -m pip install --no-cache-dir openpyxl pdf2image pdfplumber Pillow PyMuPDF pypdf python-docx python-pptx reportlab; \
+      npm cache clean --force; rm -rf /var/lib/apt/lists/*; \
+    fi
+
+ARG ELECTRON_VERSION=41.7.1
+RUN if [[ "$INSTALL_WINDOWS" = true ]]; then \
+      apt-get update; apt-get install -y --no-install-recommends wine wine64 nsis; \
+      mkdir -p "$ELECTRON_CACHE/win32-x64"; \
+      curl -fSL --retry 3 "https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/electron-v${ELECTRON_VERSION}-win32-x64.zip" -o /tmp/electron.zip; \
+      unzip -q /tmp/electron.zip -d "$ELECTRON_CACHE/win32-x64"; \
+      touch "$ELECTRON_CACHE/win32-x64/.version-${ELECTRON_VERSION}"; \
+      rm -f /tmp/electron.zip; rm -rf /var/lib/apt/lists/*; \
+      chown -R app:app "$ELECTRON_CACHE"; \
+    fi
+
+ARG APKTOOL_VERSION=3.0.2
+ARG JADX_VERSION=1.5.5
+ARG DEX2JAR_VERSION=2.4.35
+ARG UBER_APK_SIGNER_VERSION=1.3.0
+ARG ANYTHING_ANALYZER_VERSION=3.6.50
+ARG RADARE2_VERSION=6.1.6
+RUN if [[ "$INSTALL_REVERSE" = true ]]; then \
+      apt-get update; apt-get install -y --no-install-recommends \
+        libfuse2 fuse3 libgtk-3-0 libsecret-1-0 libxss1 libxtst6 libxshmfence1 \
+        libnss3 libasound2 libgbm1 xdg-utils; \
+      mkdir -p /opt/apk-tools/bin /opt/anything-analyzer; \
+      curl -fsSL "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" -o /opt/apk-tools/apktool.jar; \
+      curl -fsSL "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" -o /tmp/jadx.zip; \
+      unzip -q /tmp/jadx.zip -d /opt/apk-tools/jadx; \
+      curl -fsSL "https://github.com/ThexXTURBOXx/dex2jar/releases/download/${DEX2JAR_VERSION}/dex-tools-${DEX2JAR_VERSION}.zip" -o /tmp/dex.zip; \
+      unzip -q /tmp/dex.zip -d /tmp/dex; mv /tmp/dex/dex-tools-* /opt/apk-tools/dex2jar; \
+      curl -fsSL "https://github.com/patrickfav/uber-apk-signer/releases/download/v${UBER_APK_SIGNER_VERSION}/uber-apk-signer-${UBER_APK_SIGNER_VERSION}.jar" -o /opt/apk-tools/uber-apk-signer.jar; \
+      for tool in apktool uber-apk-signer; do \
+        printf '#!/bin/bash\nexec java -jar /opt/apk-tools/%s.jar "$@"\n' "$tool" > "/opt/apk-tools/bin/$tool"; \
+      done; \
+      for tool in d2j-dex2jar d2j-baksmali d2j-asm-verify; do \
+        printf '#!/bin/bash\nexec /opt/apk-tools/dex2jar/%s.sh "$@"\n' "$tool" > "/opt/apk-tools/bin/$tool"; \
+      done; \
+      chmod +x /opt/apk-tools/bin/* /opt/apk-tools/jadx/bin/* /opt/apk-tools/dex2jar/d2j-*.sh; \
+      curl -fL --retry 5 "https://github.com/Mouseww/anything-analyzer/releases/download/v${ANYTHING_ANALYZER_VERSION}/Anything-Analyzer-${ANYTHING_ANALYZER_VERSION}.AppImage" -o /opt/anything-analyzer/anything-analyzer.AppImage; \
+      chmod +x /opt/anything-analyzer/anything-analyzer.AppImage; \
+      printf '#!/bin/bash\nexec /opt/anything-analyzer/anything-analyzer.AppImage --no-sandbox "$@"\n' > /usr/local/bin/anything-analyzer; \
+      chmod +x /usr/local/bin/anything-analyzer; \
+      curl -fsSL --retry 3 "https://github.com/radareorg/radare2/releases/download/${RADARE2_VERSION}/radare2_${RADARE2_VERSION}_amd64.deb" -o /tmp/radare2.deb; \
+      apt-get install -y --no-install-recommends /tmp/radare2.deb; \
+      python3 -m pip install --no-cache-dir arjun bloodhound frida-tools impacket uro; \
+      rm -rf /tmp/jadx.zip /tmp/dex.zip /tmp/dex /tmp/radare2.deb /var/lib/apt/lists/*; \
+      chown -R app:app /opt/apk-tools /opt/anything-analyzer; \
+    fi
+
+RUN if [[ "$INSTALL_PYTHON_PACKAGES" = true ]]; then \
+      python3 -m pip install --no-cache-dir asyncpg asyncssh 'chardet>=5.2.0,<6' charset-normalizer \
+        click defusedxml docker fastapi httpx httpx-sse jsonschema mcp numpy openai openai-agents \
+        pydantic pydantic-settings PyJWT python-dotenv python-multipart PyYAML requests \
+        SQLAlchemy sqlmodel sse-starlette tiktoken tqdm 'uvicorn[standard]' websockets; \
+    fi
+
+ARG CODEGRAPH_VERSION=v1.6.0
+RUN if [[ "$INSTALL_CODEGRAPH" = true ]]; then \
+      curl -fsSL --retry 3 https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh -o /tmp/codegraph-install.sh; \
+      CODEGRAPH_VERSION="$CODEGRAPH_VERSION" CODEGRAPH_INSTALL_DIR=/opt/codegraph CODEGRAPH_BIN_DIR=/usr/local/bin sh /tmp/codegraph-install.sh; \
+      ln -sfn /opt/codegraph/current/bin/codegraph /usr/local/bin/codegraph; \
+      rm -f /tmp/codegraph-install.sh; chown -R app:app /opt/codegraph; \
+    fi
+
+ARG HYPERFRAMES_VERSION=latest
+ARG WHISPER_CPP_VERSION=v1.9.4
+RUN if [[ "$INSTALL_MEDIA" = true ]]; then \
+      apt-get update; apt-get install -y --no-install-recommends ffmpeg libgomp1; \
+      npm install -g "hyperframes@$HYPERFRAMES_VERSION"; \
+      python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple torch; \
+      python3 -m pip install --no-cache-dir kokoro-onnx soundfile numpy transformers; \
+      git clone --depth 1 --branch "$WHISPER_CPP_VERSION" https://github.com/ggml-org/whisper.cpp /tmp/whisper.cpp; \
+      cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=OFF; \
+      cmake --build /tmp/whisper.cpp/build --config Release -j"$(nproc)" --target whisper-cli; \
+      install -m 755 /tmp/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli; \
+      hyperframes doctor --json > /tmp/hyperframes-doctor.json; \
+      jq -e '[.checks[] | select(.name | IN("whisper-cpp","TTS (Kokoro)","BGM (MusicGen)","FFmpeg","FFprobe","Chrome","Docker")) | select(.ok | not)] | length == 0' /tmp/hyperframes-doctor.json; \
+      npm cache clean --force; rm -rf /tmp/whisper.cpp /tmp/hyperframes-doctor.json /var/lib/apt/lists/*; \
+    fi
+
+COPY base/install-go.sh /usr/local/bin/install-go.sh
+RUN chmod +x /usr/local/bin/install-go.sh \
+    && if [[ "$PREWARM_GO" = true ]]; then /usr/local/bin/install-go.sh; chown -R app:app "$GOPATH"; fi
+
+ARG MIHOMO_VERSION=1.19.30
+RUN if [[ "$INSTALL_CLASH" = true ]]; then \
+      apt-get update; apt-get install -y --no-install-recommends iptables kmod; \
+      curl -fsSL --retry 3 "https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/mihomo-linux-amd64-v${MIHOMO_VERSION}.gz" -o /tmp/mihomo.gz; \
+      gunzip /tmp/mihomo.gz; install -m 755 /tmp/mihomo /usr/local/bin/mihomo; \
+      rm -f /tmp/mihomo; rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# 复用启动约定，可通过原动态层 Dockerfile 的 BASE_IMAGE 参数继续构建。
+COPY base/entrypoint.sh base/healthcheck.sh base/init-clash.sh /usr/local/bin/
+COPY base/supervisord.conf /etc/supervisor/supervisord.conf
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/healthcheck.sh /usr/local/bin/init-clash.sh
+
+# 运行构建自检，并把实际安装情况留在镜像里供排查。
+COPY custom-base/check.py /tmp/check-custom-base.py
+RUN python3 /tmp/check-custom-base.py --image && rm /tmp/check-custom-base.py
+
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

@@ -1,0 +1,169 @@
+name: Build Custom Base Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile.base.custom'
+      - 'custom-base/check.py'
+      - 'base/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile.base.custom'
+      - 'custom-base/check.py'
+      - 'base/**'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: '独立标签：base-custom 或 base-custom-名称'
+        type: string
+        default: base-custom
+      install_go:
+        description: 'Go + gopls + govulncheck'
+        type: boolean
+        default: true
+      install_rust:
+        description: 'Rust + Clippy + rustfmt + rust-src'
+        type: boolean
+        default: true
+      install_bun:
+        description: 'Bun / bunx（Node/npm/pnpm 始终保留）'
+        type: boolean
+        default: true
+      install_docker:
+        description: 'Docker CE + Buildx + Compose（音视频也会自动安装）'
+        type: boolean
+        default: true
+      install_gh:
+        description: 'GitHub CLI'
+        type: boolean
+        default: true
+      install_node_tools:
+        description: 'TypeScript / ESLint / Prettier / esbuild / Vitest 等'
+        type: boolean
+        default: false
+      install_java:
+        description: 'Java 21 + Gradle（Android、Flutter、逆向也会自动安装）'
+        type: boolean
+        default: false
+      install_android:
+        description: 'Android SDK（自动安装 Java）'
+        type: boolean
+        default: false
+      install_flutter:
+        description: 'Flutter（自动安装 Android SDK 和 Java）'
+        type: boolean
+        default: false
+      install_browser:
+        description: 'Chrome + Playwright MCP + Python Playwright / Scrapling'
+        type: boolean
+        default: false
+      install_office:
+        description: 'LibreOffice / 文档转换 / Office 的 Node 和 Python 包'
+        type: boolean
+        default: false
+      install_reverse:
+        description: 'APK 工具 / radare2 / Anything Analyzer / Python 逆向工具（自动安装 Java）'
+        type: boolean
+        default: false
+      install_windows:
+        description: 'Wine + NSIS + Windows Electron 缓存'
+        type: boolean
+        default: false
+      install_media:
+        description: '音视频：FFmpeg / Hyperframes / whisper / CPU torch（自动安装浏览器和 Docker）'
+        type: boolean
+        default: true
+      install_python_packages:
+        description: 'Python Web / 数据库 / AI SDK 常用包（不含模型）'
+        type: boolean
+        default: false
+      install_cloud:
+        description: 'Wrangler / EAS / 飞书 CLI 与 MCP'
+        type: boolean
+        default: false
+      install_codegraph:
+        description: 'CodeGraph CLI / MCP'
+        type: boolean
+        default: false
+      install_clash:
+        description: 'mihomo / Clash TUN 工具'
+        type: boolean
+        default: false
+      prewarm_go:
+        description: '预下载原 Go 项目依赖（自动安装 Go，明显增大镜像）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+# 同一标签串行发布；自动检查不覆盖手动选择的镜像。
+concurrency:
+  group: custom-base-${{ inputs.image_tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-base-custom:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check component options and prepare build
+        id: options
+        env:
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+        run: |
+          python3 custom-base/check.py --self-test
+          python3 custom-base/check.py --prepare
+
+      # 沿用旧 Base workflow 的空间清理、Buildx、GHCR 登录和 registry 缓存。
+      - name: Free runner disk space
+        run: |
+          AVAIL_GB=$(df -BG --output=avail / | awk 'NR == 2 { gsub(/G/, ""); print }')
+          if [ "${AVAIL_GB}" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+            docker system prune -af --volumes
+          fi
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          cleanup: false
+
+      - name: Log in to Container Registry
+        if: github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and optionally push custom base
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.base.custom
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'workflow_dispatch' }}
+          tags: |
+            ${{ steps.options.outputs.image }}:${{ steps.options.outputs.tag }}
+            ${{ steps.options.outputs.image }}:${{ steps.options.outputs.tag }}-${{ github.run_id }}-${{ github.run_attempt }}
+          build-args: ${{ steps.options.outputs.build_args }}
+          cache-from: type=registry,ref=${{ steps.options.outputs.image }}:buildcache-${{ steps.options.outputs.tag }}
+          cache-to: ${{ github.event_name == 'workflow_dispatch' && format('type=registry,ref={0}:buildcache-{1},mode=min', steps.options.outputs.image, steps.options.outputs.tag) || '' }}
+
+      - name: Record published image
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          IMAGE: ${{ steps.options.outputs.image }}
+          TAG: ${{ steps.options.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          printf '\n发布成功：`%s:%s@%s`\n' "$IMAGE" "$TAG" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf '\n本次组合固定标签：`%s:%s-%s-%s`\n' "$IMAGE" "$TAG" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"
